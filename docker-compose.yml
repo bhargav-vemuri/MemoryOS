@@ -1,0 +1,93 @@
+version: "3.8"
+
+services:
+  api:
+    build: ./backend
+    container_name: memoryos_api
+    entrypoint: [""]
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - ./local_storage:/app/local_storage
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_HOST=postgres
+      - NEO4J_URI=bolt://neo4j:7687
+      - CHROMA_HOST=chroma
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - postgres
+      - neo4j
+      - chroma
+      - redis
+    restart: unless-stopped
+
+  worker:
+    build: ./backend
+    container_name: memoryos_worker
+    entrypoint: [""]
+    command: ["celery", "-A", "core.celery_app", "worker", "--loglevel=info"]
+    volumes:
+      - ./backend:/app
+      - ./local_storage:/app/local_storage
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_HOST=postgres
+      - NEO4J_URI=bolt://neo4j:7687
+      - CHROMA_HOST=chroma
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - api
+      - redis
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15
+    container_name: memoryos_postgres
+    env_file:
+      - .env
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  neo4j:
+    image: neo4j:5
+    container_name: memoryos_neo4j
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD}
+    ports:
+      - "7474:7474" # HTTP Browser
+      - "7687:7687" # Bolt
+    volumes:
+      - neo4j_data:/data
+    restart: unless-stopped
+
+  chroma:
+    image: chromadb/chroma:0.5.0
+    container_name: memoryos_chroma
+    ports:
+      - "8001:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    container_name: memoryos_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  neo4j_data:
+  chroma_data:
+  redis_data:
