@@ -9,7 +9,7 @@ export function Navbar() {
 
   const navLinks = [
     { name: "Dashboard", href: "/dashboard" },
-    { name: "Search", href: "/search" },
+    { name: "Chat", href: "/chat" },
     { name: "Timeline", href: "/timeline" },
     { name: "Graph", href: "/graph" },
   ];

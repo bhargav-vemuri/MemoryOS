@@ -4,7 +4,8 @@ MemoryOS is a local, AI-powered semantic operating system built to reconstruct y
 
 ## 🚀 Core Features
 
-- **Semantic Retrieval Engine**: Search for memories using pure meaning and context (via ChromaDB), not just exact keywords.
+- **Neural Chat (RAG)**: Conversational interface to query your digital brain. MemoryOS retrieves semantically similar context and uses local language models to synthesize accurate answers, complete with source citations.
+- **Autonomous Agents**: Intelligent background workers that automatically analyze newly ingested files, extract key concepts using LLMs, and wire them directly into your Neural Graph.
 - **Neural Relationship Graph**: Visually navigate the exact connections between your thoughts, files, and isolated concepts powered by Neo4j graph databases.
 - **Chronological Reconstruction**: Track the exact timeline of your digital injections, complete with the ability to instantly wipe specific memories from your ecosystem.
 - **Automated Digestion**: Upload PDFs, DOCX, TXT, or images, and the asynchronous Celery background workers will chunk, embed, and map the data without locking up your system.
@@ -15,6 +16,7 @@ MemoryOS is a local, AI-powered semantic operating system built to reconstruct y
 MemoryOS operates on a heavy-duty, decoupled architecture:
 * **Frontend**: Next.js (Vanilla JavaScript), Tailwind CSS, Framer Motion, React Flow.
 * **Backend API**: Python, FastAPI.
+* **Local Intelligence**: Ollama (Phi model) for secure, offline Retrieval-Augmented Generation and Agent processing.
 * **Worker Nodes**: Celery, Redis (Message Broker).
 * **Databases**:
   * **PostgreSQL**: Canonical storage and file metadata.
@@ -30,9 +32,10 @@ Because MemoryOS utilizes an array of powerful background databases, the backend
 You will need **two terminal windows** to launch the system.
 
 ### Step 0: Environment Setup
-Before running the system, you must configure your environment variables:
-1. Copy the example configuration: `cp .env.example .env`
-2. Open `.env` and fill in your secure database passwords and secret keys. (The `.env` file is safely ignored by Git).
+Before running the system, ensure you have your dependencies configured:
+1. **Ollama**: MemoryOS relies on local LLMs for processing. Install [Ollama](https://ollama.com/) and pull the `phi` model by running `ollama run phi` in your terminal. Ensure Ollama is running in the background.
+2. **Environment Variables**: Copy the example configuration: `cp .env.example .env`
+3. Open `.env` and fill in your secure database passwords and secret keys. (The `.env` file is safely ignored by Git).
 
 ### Step 1: Ignite the Backend (Docker)
 Open your terminal in the root `MemoryOS` directory and run:

@@ -9,6 +9,9 @@ from models.file import MemoryFile, FileStatus
 from workers.tasks import process_file_task
 from services.embedding_service import embedding_service
 from services.graph_service import graph_service
+from services.llm_service import llm_service
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 router = APIRouter()
 UPLOAD_DIR = "local_storage"
@@ -74,47 +77,6 @@ def delete_file(file_id: int, db: Session = Depends(get_db)):
     
     return {"message": "File completely deleted from all systems"}
 
-@router.get("/search")
-def semantic_search(q: str, db: Session = Depends(get_db)):
-    if not q:
-        return {"results": []}
-    
-    results = embedding_service.search_similar(q, n_results=10)
-    
-    if not results or not results['documents']:
-        return {"results": []}
-        
-    # Format results
-    formatted = []
-    seen_filenames = set()
-    for i in range(len(results['documents'][0])):
-        chunk_text = results['documents'][0][i]
-        metadata = results['metadatas'][0][i]
-        file_id = metadata['file_id']
-        
-        db_file = db.query(MemoryFile).filter(MemoryFile.id == file_id).first()
-        filename = db_file.filename if db_file else "Unknown"
-        
-        # Deduplicate to show diverse files
-        if filename in seen_filenames:
-            continue
-        seen_filenames.add(filename)
-        
-        raw_distance = results['distances'][0][i] if 'distances' in results and results['distances'] else 0
-        cosine_sim = max(0.0, 1.0 - (raw_distance / 2.0))
-        
-        # User explicitly requested raw mathematical cosine similarity without UI scaling
-        pure_score = cosine_sim
-        
-        formatted.append({
-            "file_id": file_id,
-            "filename": filename,
-            "text": chunk_text,
-            "score": pure_score
-        })
-        
-    return {"results": formatted}
-
 @router.get("/graph")
 def get_graph():
     return graph_service.get_graph_data()
@@ -158,3 +120,57 @@ def get_stats(db: Session = Depends(get_db)):
         "semantic_depth": f"{semantic_depth}%",
         "recent_clusters": [c.get("label") for c in concepts[:3]] if concepts else ["Initialization Phase"]
     }
+
+class ChatRequest(BaseModel):
+    query: str
+    messages: List[dict] = []
+
+@router.post("/chat")
+def chat_with_memory(request: ChatRequest, db: Session = Depends(get_db)):
+    # Retrieve context
+    results = embedding_service.search_similar(request.query, n_results=5)
+    context_texts = []
+    citations_text = "\n\n---\n### 🔍 Memory Sources\n"
+    
+    if results and results.get('documents') and len(results['documents'][0]) > 0:
+        seen_filenames = set()
+        for i in range(len(results['documents'][0])):
+            chunk_text = results['documents'][0][i]
+            context_texts.append(chunk_text)
+            
+            metadata = results['metadatas'][0][i]
+            file_id = metadata['file_id']
+            db_file = db.query(MemoryFile).filter(MemoryFile.id == file_id).first()
+            filename = db_file.filename if db_file else "Unknown"
+            
+            if filename not in seen_filenames:
+                seen_filenames.add(filename)
+                raw_distance = results['distances'][0][i] if 'distances' in results and results['distances'] else 0
+                cosine_sim = max(0.0, 1.0 - (raw_distance / 2.0))
+                pure_score = round(cosine_sim * 100, 1)
+                
+                citations_text += f"- {filename} (Similarity: {pure_score}%)\n"
+    else:
+        citations_text += "No relevant memories found in your system for this query.\n"
+    
+    context_str = "\n\n".join(context_texts)
+    
+    system_prompt = (
+        "You are MemoryOS, an intelligent AI operating system. "
+        "Answer the user's question based ONLY on the following extracted memories (context). "
+        "If the answer is not contained in the context, clearly state: 'I don't have enough information in your memories to answer that.' "
+        "Under no circumstances should you invent facts, hallucinate, or create puzzles.\n\n"
+        f"CONTEXT:\n{context_str}"
+    )
+    
+    messages = request.messages.copy()
+    if not messages or messages[0].get("role") != "system":
+        messages.insert(0, {"role": "system", "content": system_prompt})
+    
+    # We yield SSE-like formatting for easy consumption on the frontend
+    def generate():
+        for chunk in llm_service.generate_chat_stream(messages):
+            yield chunk
+        yield citations_text
+
+    return StreamingResponse(generate(), media_type="text/plain")

@@ -8,6 +8,7 @@ from models.user import User
 from services.ocr_service import ocr_service
 from services.embedding_service import embedding_service
 from services.graph_service import graph_service
+from services.agent_service import agent_service
 
 def extract_text(file_path: str, file_type: str) -> str:
     if file_type == "application/pdf":
@@ -61,6 +62,9 @@ def process_file_task(file_id: int):
 
         file_record.status = FileStatus.COMPLETED
         db.commit()
+
+        # 5. Agent Processing
+        agent_service.process_new_memory(file_id, file_record.filename, text)
 
     except Exception as e:
         print(f"Error processing file {file_id}: {e}")
