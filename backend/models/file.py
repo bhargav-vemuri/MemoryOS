@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Enum, Text
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Enum, Text, Index, Float
+from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import enum
@@ -20,6 +21,14 @@ class MemoryFile(Base):
     storage_path = Column(String, nullable=False)
     status = Column(Enum(FileStatus), default=FileStatus.PENDING)
     extracted_text = Column(Text, nullable=True) # Full extracted text
+    search_vector = Column(TSVECTOR)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    cluster_id = Column(Integer, ForeignKey("clusters.id"), nullable=True)
+    importance_score = Column(Float, default=0.0)
+    
+    __table_args__ = (
+        Index('ix_files_search_vector', 'search_vector', postgresql_using='gin'),
+    )
     
     user = relationship("User")
+    cluster = relationship("MemoryCluster", back_populates="files")

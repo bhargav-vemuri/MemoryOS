@@ -6,12 +6,16 @@ from typing import List
 
 from core.database import get_db
 from models.file import MemoryFile, FileStatus
+from models.cluster import MemoryCluster
+from models.interaction import MemoryInteraction
 from workers.tasks import process_file_task
 from services.embedding_service import embedding_service
 from services.graph_service import graph_service
 from services.llm_service import llm_service
+from services.retrieval_service import retrieval_service
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+import math
 
 router = APIRouter()
 UPLOAD_DIR = "local_storage"
@@ -81,6 +85,25 @@ def delete_file(file_id: int, db: Session = Depends(get_db)):
 def get_graph():
     return graph_service.get_graph_data()
 
+@router.get("/graph/analytics")
+def get_graph_analytics():
+    centrality_scores = graph_service.calculate_centrality()
+    return {"centrality": centrality_scores}
+
+@router.get("/clusters")
+def get_clusters(db: Session = Depends(get_db)):
+    clusters = db.query(MemoryCluster).order_by(MemoryCluster.created_at.desc()).all()
+    return {
+        "clusters": [
+            {
+                "id": c.id,
+                "name": c.name,
+                "summary": c.summary,
+                "memory_count": len(c.files)
+            } for c in clusters
+        ]
+    }
+
 @router.get("/timeline")
 def get_timeline(db: Session = Depends(get_db)):
     files = db.query(MemoryFile).order_by(MemoryFile.created_at.desc()).limit(50).all()
@@ -91,10 +114,29 @@ def get_timeline(db: Session = Depends(get_db)):
                 "filename": f.filename,
                 "type": f.file_type,
                 "date": f.created_at,
-                "status": f.status
+                "status": f.status,
+                "importance_score": f.importance_score
             } for f in files
         ]
     }
+
+@router.get("/timeline/analytics")
+def get_timeline_analytics(db: Session = Depends(get_db)):
+    """Provides a summarized breakdown of memory ingestion over time."""
+    from sqlalchemy import func
+    # Group by month/year (naive approach for sqlite/postgres compatibility)
+    # Using Postgres date_trunc
+    try:
+        results = db.query(
+            func.date_trunc('month', MemoryFile.created_at).label('month'),
+            func.count(MemoryFile.id).label('count')
+        ).group_by('month').order_by('month').all()
+        
+        trends = [{"month": str(r.month), "count": r.count} for r in results]
+    except Exception:
+        trends = []
+        
+    return {"evolution_trends": trends}
 
 @router.get("/stats")
 def get_stats(db: Session = Depends(get_db)):
@@ -127,39 +169,53 @@ class ChatRequest(BaseModel):
 
 @router.post("/chat")
 def chat_with_memory(request: ChatRequest, db: Session = Depends(get_db)):
-    # Retrieve context
-    results = embedding_service.search_similar(request.query, n_results=5)
-    context_texts = []
-    citations_text = "\n\n---\n### 🔍 Memory Sources\n"
+    # Retrieve context using Hybrid Search
+    results = retrieval_service.hybrid_search(request.query, db, n_results=5)
     
-    if results and results.get('documents') and len(results['documents'][0]) > 0:
+    context_texts = []
+    citations_text = "\n\n---\n### 🔍 Memory Sources (Hybrid Retrieval)\n"
+    
+    if results:
         seen_filenames = set()
-        for i in range(len(results['documents'][0])):
-            chunk_text = results['documents'][0][i]
+        for doc in results:
+            chunk_text = doc["text"]
             context_texts.append(chunk_text)
             
-            metadata = results['metadatas'][0][i]
-            file_id = metadata['file_id']
+            file_id = doc["file_id"]
             db_file = db.query(MemoryFile).filter(MemoryFile.id == file_id).first()
             filename = db_file.filename if db_file else "Unknown"
+            source_type = doc.get("source", "unknown")
+            
+            # Log interaction for Importance Scoring
+            interaction = MemoryInteraction(file_id=file_id, interaction_type="retrieved")
+            db.add(interaction)
             
             if filename not in seen_filenames:
                 seen_filenames.add(filename)
-                raw_distance = results['distances'][0][i] if 'distances' in results and results['distances'] else 0
-                cosine_sim = max(0.0, 1.0 - (raw_distance / 2.0))
-                pure_score = round(cosine_sim * 100, 1)
+                # Cross-encoders often output logits, convert to a rough 0-100% confidence for UI
+                raw_score = doc.get("score", 0)
+                confidence = round((1 / (1 + math.exp(-raw_score))) * 100, 1)
                 
-                citations_text += f"- {filename} (Similarity: {pure_score}%)\n"
+                citations_text += f"- **{filename}** (Confidence: {confidence}% | Source: {source_type.upper()})\n"
+        db.commit() # Commit interactions
     else:
         citations_text += "No relevant memories found in your system for this query.\n"
+        def generate_empty():
+            yield "I don't have enough information in your memories to answer that. It seems you haven't uploaded any files related to this topic yet.\n\n"
+            yield citations_text
+        return StreamingResponse(generate_empty(), media_type="text/plain")
     
     context_str = "\n\n".join(context_texts)
     
     system_prompt = (
-        "You are MemoryOS, an intelligent AI operating system. "
-        "Answer the user's question based ONLY on the following extracted memories (context). "
-        "If the answer is not contained in the context, clearly state: 'I don't have enough information in your memories to answer that.' "
-        "Under no circumstances should you invent facts, hallucinate, or create puzzles.\n\n"
+        "You are MemoryOS, an advanced AI reasoning engine. "
+        "Use the following extracted memories (context) to answer the user's query.\n\n"
+        "INSTRUCTIONS:\n"
+        "1. Analyze the context step-by-step.\n"
+        "2. Identify temporal or conceptual links across the provided memories (Multi-hop Reasoning).\n"
+        "3. Synthesize a comprehensive answer.\n"
+        "4. If the answer is not contained in the context, clearly state: 'I don't have enough information in your memories to answer that.'\n"
+        "5. Under no circumstances should you invent facts, hallucinate, or create logic puzzles.\n\n"
         f"CONTEXT:\n{context_str}"
     )
     

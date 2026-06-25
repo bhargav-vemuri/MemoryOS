@@ -3,12 +3,15 @@ import pdfplumber
 import docx
 from core.celery_app import celery_app
 from core.database import SessionLocal
+from sqlalchemy import text
 from models.file import MemoryFile, FileStatus
 from models.user import User
 from services.ocr_service import ocr_service
 from services.embedding_service import embedding_service
 from services.graph_service import graph_service
 from services.agent_service import agent_service
+from services.clustering_service import clustering_service
+from services.scoring_service import scoring_service
 
 def extract_text(file_path: str, file_type: str) -> str:
     if file_type == "application/pdf":
@@ -45,30 +48,63 @@ def process_file_task(file_id: int):
         db.commit()
 
         # 1. Extract Text
-        text = extract_text(file_record.storage_path, file_record.file_type)
-        file_record.extracted_text = text
+        text_content = extract_text(file_record.storage_path, file_record.file_type)
+        file_record.extracted_text = text_content
         db.commit()
 
-        if text.strip():
+        if text_content.strip():
+            # Update search_vector for BM25 full-text search
+            db.execute(
+                text("UPDATE files SET search_vector = to_tsvector('english', :text) WHERE id = :id"),
+                {"text": text_content, "id": file_id}
+            )
+            db.commit()
+            
             # 2. Chunk Text
-            chunks = chunk_text(text)
+            chunks = chunk_text(text_content)
             
             # 3. Generate Embeddings & Store in Chroma
             embedding_service.add_chunks_to_chroma(file_id, chunks)
             
+        if file_record.file_type.startswith("image/"):
+            # Multimodal embedding
+            embedding_service.add_image_to_chroma(file_id, file_record.storage_path)
+            
+        if text_content.strip() or file_record.file_type.startswith("image/"):
             # 4. Generate Graph Relationships
             graph_service.create_file_node(file_id, file_record.filename, file_record.file_type)
-            graph_service.extract_and_create_entities(file_id, text)
+            graph_service.extract_and_create_entities(file_id, text_content)
 
         file_record.status = FileStatus.COMPLETED
         db.commit()
 
         # 5. Agent Processing
-        agent_service.process_new_memory(file_id, file_record.filename, text)
+        agent_service.process_new_memory(file_id, file_record.filename, text_content)
 
     except Exception as e:
         print(f"Error processing file {file_id}: {e}")
         file_record.status = FileStatus.FAILED
         db.commit()
+    finally:
+        db.close()
+
+@celery_app.task
+def agentic_maintenance_task():
+    """
+    Background worker that runs periodically to maintain memory structures.
+    1. Clusters orphaned memories.
+    2. Recalculates importance scores.
+    """
+    db = SessionLocal()
+    try:
+        print("Agent Maintenance: Running clustering service...")
+        clustering_service.cluster_memories(db)
+        
+        print("Agent Maintenance: Recalculating importance scores...")
+        scoring_service.update_importance_scores(db)
+        
+        print("Agent Maintenance: Complete.")
+    except Exception as e:
+        print(f"Error during agent maintenance: {e}")
     finally:
         db.close()

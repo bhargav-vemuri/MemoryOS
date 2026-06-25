@@ -25,6 +25,36 @@ class GraphService:
         with neo4j_client.get_session() as session:
             session.run(query, file_id=file_id, concepts=concepts)
 
+    def extract_and_create_projects(self, file_id: int, project_name: str):
+        query = """
+        MATCH (f:File {id: $file_id})
+        MERGE (p:Project {name: $project_name})
+        MERGE (f)-[:BELONGS_TO_PROJECT]->(p)
+        """
+        with neo4j_client.get_session() as session:
+            session.run(query, file_id=file_id, project_name=project_name)
+
+    def link_evolution(self, concept_a: str, concept_b: str):
+        query = """
+        MERGE (a:Concept {name: $concept_a})
+        MERGE (b:Concept {name: $concept_b})
+        MERGE (a)-[:EVOLVED_TO]->(b)
+        """
+        with neo4j_client.get_session() as session:
+            session.run(query, concept_a=concept_a, concept_b=concept_b)
+
+    def calculate_centrality(self):
+        query = """
+        MATCH (c:Concept)<-[r]-()
+        WITH c, count(r) as incoming_links
+        SET c.centrality = incoming_links
+        RETURN c.name as name, c.centrality as score
+        ORDER BY c.centrality DESC
+        LIMIT 10
+        """
+        with neo4j_client.get_session() as session:
+            return session.run(query).data()
+
     def delete_file_node(self, file_id: int):
         query = """
         MATCH (f:File {id: $file_id})

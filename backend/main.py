@@ -5,6 +5,8 @@ from api.endpoints import router as api_router
 from core.database import engine, Base
 import models.user
 import models.file
+import models.cluster
+import models.interaction
 
 # Create tables
 Base.metadata.create_all(bind=engine)
